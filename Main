@@ -1,0 +1,817 @@
+
+--[[
+    SWX RSCRIPTS HUB
+    Version 1.0 | Read-only API browser
+    Black / Purple UI
+    No script execution, no loadstring, no source loader.
+    
+    Uses:
+      https://api.rscripts.net
+      Executor HTTP request function
+      Roblox HttpService JSON decoder
+]]
+
+local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+
+local Player = Players.LocalPlayer
+local API = "https://api.rscripts.net"
+
+local C = {
+    BG = Color3.fromRGB(12, 10, 19),
+    Panel = Color3.fromRGB(20, 17, 30),
+    Card = Color3.fromRGB(28, 23, 42),
+    Purple = Color3.fromRGB(153, 85, 255),
+    Light = Color3.fromRGB(194, 151, 255),
+    Text = Color3.fromRGB(244, 239, 255),
+    Muted = Color3.fromRGB(155, 146, 173),
+    Border = Color3.fromRGB(57, 43, 79),
+    Red = Color3.fromRGB(255, 95, 115),
+    Green = Color3.fromRGB(111, 230, 170),
+    Yellow = Color3.fromRGB(255, 206, 110)
+}
+
+local State = {
+    Page = 1,
+    Limit = 12,
+    Tab = "Browse",
+    Query = "",
+    Sort = "recommended",
+    Free = false,
+    Mobile = false,
+    NoKey = false,
+    Verified = false,
+    Busy = false,
+    TotalPages = 1,
+    RequestId = 0
+}
+
+-- HTTP ADAPTER
+-- Requires an HTTP request function supplied by your environment.
+-- API keys should never be placed in a public client-side script.
+
+local function getRequestFunction()
+    if type(request) == "function" then
+        return request
+    end
+
+    if type(http_request) == "function" then
+        return http_request
+    end
+
+    return nil
+end
+
+local function apiGet(path)
+    local req = getRequestFunction()
+    if not req then
+        return nil, "HTTP request function unavailable"
+    end
+
+    local ok, response = pcall(function()
+        return req({
+            Url = API .. path,
+            Method = "GET",
+            Headers = {
+                ["Accept"] = "application/json"
+            }
+        })
+    end)
+
+    if not ok or type(response) ~= "table" then
+        return nil, "Network request failed"
+    end
+
+    local status = tonumber(response.StatusCode or response.Status)
+    if not status or status < 200 or status >= 300 then
+        return nil, "HTTP " .. tostring(status or "error")
+    end
+
+    local decoded, result = pcall(function()
+        return HttpService:JSONDecode(response.Body)
+    end)
+
+    if not decoded or type(result) ~= "table" then
+        return nil, "Invalid API response"
+    end
+
+    if result.success == false then
+        return nil, "API returned an error"
+    end
+
+    return result
+end
+
+local function enc(value)
+    return HttpService:UrlEncode(tostring(value or ""))
+end
+
+local function makeQuery(params)
+    local parts = {}
+
+    for key, value in pairs(params) do
+        if value ~= nil then
+            table.insert(
+                parts,
+                enc(key) .. "=" .. enc(value)
+            )
+        end
+    end
+
+    table.sort(parts)
+    return "?" .. table.concat(parts, "&")
+end
+
+-- GUI HELPERS
+
+local oldGui = nil
+pcall(function()
+    local pg = Player:FindFirstChildOfClass("PlayerGui")
+    if pg then
+        oldGui = pg:FindFirstChild("SWX_RSCRIPTS_HUB")
+    end
+end)
+
+if oldGui then
+    oldGui:Destroy()
+end
+
+local Gui = Instance.new("ScreenGui")
+Gui.Name = "SWX_RSCRIPTS_HUB"
+Gui.ResetOnSpawn = false
+Gui.DisplayOrder = 20
+
+pcall(function()
+    if gethui then
+        Gui.Parent = gethui()
+    else
+        Gui.Parent = Player:WaitForChild("PlayerGui")
+    end
+end)
+
+if not Gui.Parent then
+    Gui.Parent = Player:WaitForChild("PlayerGui")
+end
+
+local function create(class, props, parent)
+    local obj = Instance.new(class)
+
+    for key, value in pairs(props or {}) do
+        obj[key] = value
+    end
+
+    obj.Parent = parent
+    return obj
+end
+
+local function round(obj, radius)
+    create("UICorner", {
+        CornerRadius = UDim.new(0, radius or 10)
+    }, obj)
+end
+
+local function stroke(obj, color, transparency)
+    create("UIStroke", {
+        Color = color or C.Border,
+        Transparency = transparency or 0,
+        Thickness = 1
+    }, obj)
+end
+
+local function button(parent, text, size, pos)
+    local b = create("TextButton", {
+        Size = size,
+        Position = pos,
+        BackgroundColor3 = C.Card,
+        BorderSizePixel = 0,
+        Text = text,
+        TextColor3 = C.Text,
+        TextSize = 13,
+        Font = Enum.Font.GothamMedium,
+        AutoButtonColor = false
+    }, parent)
+
+    round(b, 8)
+    stroke(b, C.Border)
+
+    b.MouseEnter:Connect(function()
+        TweenService:Create(b, TweenInfo.new(0.12), {
+            BackgroundColor3 = C.Border
+        }):Play()
+    end)
+
+    b.MouseLeave:Connect(function()
+        TweenService:Create(b, TweenInfo.new(0.12), {
+            BackgroundColor3 = C.Card
+        }):Play()
+    end)
+
+    return b
+end
+
+local function label(parent, text, size, pos, textSize, color)
+    return create("TextLabel", {
+        Size = size,
+        Position = pos,
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = color or C.Text,
+        TextSize = textSize or 13,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        TextWrapped = true
+    }, parent)
+end
+
+local Main = create("Frame", {
+    Name = "Main",
+    Size = UDim2.new(0.88, 0, 0.78, 0),
+    Position = UDim2.new(0.06, 0, 0.1, 0),
+    BackgroundColor3 = C.BG,
+    BorderSizePixel = 0,
+    ClipsDescendants = true
+}, Gui)
+
+Main.Size = UDim2.new(
+    0,
+    math.min(760, math.max(340, workspace.CurrentCamera.ViewportSize.X - 24)),
+    0,
+    math.min(590, math.max(420, workspace.CurrentCamera.ViewportSize.Y - 70))
+)
+Main.Position = UDim2.new(0.5, 0, 0.5, 0)
+Main.AnchorPoint = Vector2.new(0.5, 0.5)
+
+round(Main, 14)
+stroke(Main, C.Purple)
+
+-- TOP BAR
+
+local Top = create("Frame", {
+    Size = UDim2.new(1, 0, 0, 54),
+    BackgroundColor3 = C.Panel,
+    BorderSizePixel = 0
+}, Main)
+
+local Accent = create("Frame", {
+    Size = UDim2.new(1, 0, 0, 2),
+    BackgroundColor3 = C.Purple,
+    BorderSizePixel = 0
+}, Top)
+
+label(
+    Top, "SWX", UDim2.new(0, 52, 0, 28),
+    UDim2.new(0, 15, 0, 5), 21, C.Light
+).Font = Enum.Font.GothamBold
+
+label(
+    Top, "RSCRIPTS HUB", UDim2.new(0, 155, 0, 20),
+    UDim2.new(0, 66, 0, 8), 12, C.Text
+).Font = Enum.Font.GothamBold
+
+label(
+    Top, "READ ONLY", UDim2.new(0, 90, 0, 16),
+    UDim2.new(0, 67, 0, 29), 9, C.Green
+)
+
+local Minimize = button(
+    Top, "—", UDim2.new(0, 34, 0, 30),
+    UDim2.new(1, -82, 0, 12)
+)
+
+local Close = button(
+    Top, "×", UDim2.new(0, 34, 0, 30),
+    UDim2.new(1, -42, 0, 12)
+)
+
+-- DRAG SUPPORT
+
+local dragging = false
+local dragStart
+local startPos
+
+Top.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = Main.Position
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        local delta = input.Position - dragStart
+
+        Main.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+local minimized = false
+
+Minimize.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    Main.Size = minimized
+        and UDim2.new(0, 270, 0, 54)
+        or UDim2.new(
+            0,
+            math.min(760, math.max(340, workspace.CurrentCamera.ViewportSize.X - 24)),
+            0,
+            math.min(590, math.max(420, workspace.CurrentCamera.ViewportSize.Y - 70))
+        )
+end)
+
+Close.MouseButton1Click:Connect(function()
+    Gui:Destroy()
+end)
+
+-- CONTENT LAYOUT
+
+local Sidebar = create("Frame", {
+    Size = UDim2.new(0, 132, 1, -54),
+    Position = UDim2.new(0, 0, 0, 54),
+    BackgroundColor3 = C.Panel,
+    BorderSizePixel = 0
+}, Main)
+
+local Content = create("Frame", {
+    Size = UDim2.new(1, -144, 1, -66),
+    Position = UDim2.new(0, 138, 0, 60),
+    BackgroundTransparency = 1
+}, Main)
+
+local NavList = create("UIListLayout", {
+    Padding = UDim.new(0, 8),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, Sidebar)
+
+NavList.Padding = UDim.new(0, 8)
+
+create("UIPadding", {
+    PaddingTop = UDim.new(0, 14),
+    PaddingLeft = UDim.new(0, 9),
+    PaddingRight = UDim.new(0, 9)
+}, Sidebar)
+
+local Status = label(
+    Main, "Connecting to API...", UDim2.new(1, -22, 0, 20),
+    UDim2.new(0, 12, 1, -23), 10, C.Muted
+)
+
+local navButtons = {}
+local renderPage
+
+local function setStatus(text, color)
+    if Status and Status.Parent then
+        Status.Text = text
+        Status.TextColor3 = color or C.Muted
+    end
+end
+
+-- BROWSE FILTERS
+
+local SearchBox = create("TextBox", {
+    Size = UDim2.new(1, -92, 0, 38),
+    Position = UDim2.new(0, 0, 0, 0),
+    BackgroundColor3 = C.Panel,
+    BorderSizePixel = 0,
+    PlaceholderText = "Search scripts...",
+    PlaceholderColor3 = C.Muted,
+    Text = "",
+    TextColor3 = C.Text,
+    TextSize = 13,
+    Font = Enum.Font.Gotham,
+    ClearTextOnFocus = false
+}, Content)
+
+round(SearchBox, 9)
+stroke(SearchBox, C.Border)
+
+local SearchBtn = button(
+    Content, "SEARCH", UDim2.new(0, 84, 0, 38),
+    UDim2.new(1, -84, 0, 0)
+)
+
+local FilterFrame = create("Frame", {
+    Size = UDim2.new(1, 0, 0, 74),
+    Position = UDim2.new(0, 0, 0, 46),
+    BackgroundTransparency = 1
+}, Content)
+
+local FilterLayout = create("UIGridLayout", {
+    CellSize = UDim2.new(0.25, -5, 0, 30),
+    CellPadding = UDim2.new(0, 5, 0, 6),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, FilterFrame)
+
+local filterButtons = {}
+
+local filterDefinitions = {
+    {"Free", "Free"},
+    {"Mobile", "Mobile"},
+    {"No Key", "NoKey"},
+    {"Verified", "Verified"}
+}
+
+local function updateFilterButtons()
+    for _, entry in ipairs(filterDefinitions) do
+        local name, key = entry[1], entry[2]
+        local active = State[key]
+
+        local b = filterButtons[key]
+        if b then
+            b.Text = name .. (active and " ✓" or "")
+            b.BackgroundColor3 = active and C.Purple or C.Card
+        end
+    end
+end
+
+for i, entry in ipairs(filterDefinitions) do
+    local name, key = entry[1], entry[2]
+
+    local b = button(
+        FilterFrame, name,
+        UDim2.new(0.25, -5, 0, 30),
+        UDim2.new(0, 0, 0, 0)
+    )
+
+    b.LayoutOrder = i
+    filterButtons[key] = b
+
+    b.MouseButton1Click:Connect(function()
+        State[key] = not State[key]
+        State.Page = 1
+        updateFilterButtons()
+
+        if State.Tab == "Browse" then
+            renderPage()
+        end
+    end)
+end
+
+local SortButton = button(
+    Content, "SORT: RECOMMENDED",
+    UDim2.new(1, 0, 0, 32),
+    UDim2.new(0, 0, 0, 125)
+)
+
+local sortOptions = {
+    {"recommended", "RECOMMENDED"},
+    {"newest", "NEWEST"},
+    {"most-views", "MOST VIEWS"},
+    {"most-likes", "MOST LIKES"},
+    {"trending", "TRENDING"},
+    {"oldest", "OLDEST"},
+    {"least-views", "LEAST VIEWS"}
+}
+
+local sortIndex = 1
+
+SortButton.MouseButton1Click:Connect(function()
+    sortIndex = sortIndex % #sortOptions + 1
+    State.Sort = sortOptions[sortIndex][1]
+    SortButton.Text = "SORT: " .. sortOptions[sortIndex][2]
+    State.Page = 1
+
+    if State.Tab == "Browse" then
+        renderPage()
+    end
+end)
+
+local Results = create("ScrollingFrame", {
+    Size = UDim2.new(1, 0, 1, -208),
+    Position = UDim2.new(0, 0, 0, 166),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    ScrollBarImageColor3 = C.Purple,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y
+}, Content)
+
+create("UIListLayout", {
+    Padding = UDim.new(0, 8),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, Results)
+
+create("UIPadding", {
+    PaddingBottom = UDim.new(0, 6),
+    PaddingRight = UDim.new(0, 4)
+}, Results)
+
+local Pagination = create("Frame", {
+    Size = UDim2.new(1, 0, 0, 32),
+    Position = UDim2.new(0, 0, 1, -36),
+    BackgroundTransparency = 1
+}, Content)
+
+local Prev = button(
+    Pagination, "< PREV", UDim2.new(0, 84, 1, 0),
+    UDim2.new(0, 0, 0, 0)
+)
+
+local PageLabel = label(
+    Pagination, "Page 1", UDim2.new(0.5, -20, 1, 0),
+    UDim2.new(0.5, 0, 0, 0), 12, C.Light
+)
+PageLabel.TextXAlignment = Enum.TextXAlignment.Center
+
+local Next = button(
+    Pagination, "NEXT >", UDim2.new(0, 84, 1, 0),
+    UDim2.new(1, -84, 0, 0)
+)
+
+-- DETAILS VIEW
+
+local function clearResults()
+    for _, child in ipairs(Results:GetChildren()) do
+        if child:IsA("Frame") or child:IsA("TextLabel")
+            or child:IsA("TextButton") then
+            child:Destroy()
+        end
+    end
+end
+
+local function addInfo(parent, title, value, y)
+    label(
+        parent, title, UDim2.new(1, -20, 0, 20),
+        UDim2.new(0, 10, 0, y), 11, C.Light
+    )
+
+    label(
+        parent, tostring(value or "Not provided"),
+        UDim2.new(1, -20, 0, 44),
+        UDim2.new(0, 10, 0, y + 19), 12, C.Text
+    )
+end
+
+local function riskLabel(risk)
+    if type(risk) ~= "table" or risk.score == nil then
+        return "UNKNOWN - NOT SCANNED", C.Yellow
+    end
+
+    local score = tonumber(risk.score)
+    if not score or score < 1 or score > 10 then
+        return "UNKNOWN - INVALID SCORE", C.Yellow
+    end
+
+    if score >= 8 then
+        return "HIGH RISK / " .. score .. "/10", C.Red
+    elseif score >= 5 then
+        return "MEDIUM RISK / " .. score .. "/10", C.Yellow
+    end
+
+    return "LOWER RISK / " .. score .. "/10", C.Green
+end
+
+local function showDetails(item)
+    clearResults()
+
+    local slug = item.slug
+    if type(slug) ~= "string" then
+        setStatus("This result has no valid slug", C.Red)
+        return
+    end
+
+    setStatus("Loading details...")
+
+    task.spawn(function()
+        local data, err = apiGet("/v1/scripts/" .. enc(slug))
+
+        if not data then
+            setStatus("Details failed: " .. tostring(err), C.Red)
+            return
+        end
+
+        if type(data.data) == "table" then
+            data = data.data
+        end
+
+        clearResults()
+
+        local card = create("Frame", {
+            Size = UDim2.new(1, -6, 0, 430),
+            BackgroundColor3 = C.Panel,
+            BorderSizePixel = 0
+        }, Results)
+
+        round(card, 10)
+        stroke(card, C.Border)
+
+        local title = label(
+            card, tostring(data.title or item.title or "Untitled"),
+            UDim2.new(1, -20, 0, 48),
+            UDim2.new(0, 10, 0, 8), 16, C.Light
+        )
+        title.Font = Enum.Font.GothamBold
+
+        local risk, riskColor = riskLabel(data.risk)
+
+        label(
+            card, "RISK: " .. risk,
+            UDim2.new(1, -20, 0, 24),
+            UDim2.new(0, 10, 0, 59), 12, riskColor
+        ).Font = Enum.Font.GothamBold
+
+        addInfo(card, "CREATOR",
+            type(data.creator) == "table"
+                and data.creator.username or "Unknown", 88)
+
+        addInfo(card, "GAME",
+            type(data.game) == "table"
+                and data.game.title or "Unknown", 150)
+
+        addInfo(card, "DESCRIPTION",
+            tostring(data.description or "No description"), 212)
+
+        local likes = tonumber(data.likes) or 0
+        local views = tonumber(data.views) or 0
+
+        label(
+            card, "Views: " .. views .. "  •  Likes: " .. likes,
+            UDim2.new(1, -20, 0, 22),
+            UDim2.new(0, 10, 0, 288), 11, C.Muted
+        )
+
+        local riskObj = data.risk
+        if type(riskObj) == "table"
+            and type(riskObj.findings) == "table"
+            and #riskObj.findings > 0 then
+
+            local first = riskObj.findings[1]
+            local findingText = type(first) == "table"
+                and tostring(first.label or "Finding")
+                or "Finding"
+
+            label(
+                card, "Finding: " .. findingText,
+                UDim2.new(1, -20, 0, 28),
+                UDim2.new(0, 10, 0, 314), 11, C.Yellow
+            )
+        end
+
+        local back = button(
+            card, "← BACK TO RESULTS",
+            UDim2.new(0.55, 0, 0, 34),
+            UDim2.new(0, 10, 1, -45)
+        )
+
+        back.MouseButton1Click:Connect(function()
+            renderPage()
+        end)
+
+        setStatus(
+            "Details loaded • Source is never executed",
+            C.Green
+        )
+    end)
+end
+
+-- RESULT CARDS
+
+local function addScriptCard(item, index)
+    local card = create("Frame", {
+        Name = "ScriptCard",
+        Size = UDim2.new(1, -6, 0, 102),
+        BackgroundColor3 = C.Panel,
+        BorderSizePixel = 0,
+        LayoutOrder = index
+    }, Results)
+
+    round(card, 10)
+    stroke(card, C.Border)
+
+    local title = label(
+        card, tostring(item.title or "Untitled"),
+        UDim2.new(1, -118, 0, 35),
+        UDim2.new(0, 10, 0, 8), 13, C.Text
+    )
+    title.Font = Enum.Font.GothamBold
+
+    local creator = type(item.creator) == "table"
+        and item.creator.username or "Unknown creator"
+
+    local game = type(item.game) == "table"
+        and item.game.title or "Unknown game"
+
+    label(
+        card, tostring(creator) .. " • " .. tostring(game),
+        UDim2.new(1, -118, 0, 22),
+        UDim2.new(0, 10, 0, 43), 10, C.Muted
+    )
+
+    local risk, riskColor = riskLabel(item.risk)
+
+    label(
+        card, risk,
+        UDim2.new(1, -118, 0, 20),
+        UDim2.new(0, 10, 0, 70), 10, riskColor
+    )
+
+    local details = button(
+        card, "DETAILS",
+        UDim2.new(0, 90, 0, 30),
+        UDim2.new(1, -100, 0, 12)
+    )
+
+    details.MouseButton1Click:Connect(function()
+        showDetails(item)
+    end)
+
+    local stats = label(
+        card,
+        "Views " .. tostring(item.views or 0)
+            .. "  •  Likes " .. tostring(item.likes or 0),
+        UDim2.new(0, 102, 0, 25),
+        UDim2.new(1, -108, 0, 54), 9, C.Muted
+    )
+    stats.TextXAlignment = Enum.TextXAlignment.Center
+end
+
+-- API DATA RENDERING
+
+renderPage = function()
+    if State.Busy then
+        return
+    end
+
+    State.Busy = true
+    State.RequestId += 1
+
+    local requestId = State.RequestId
+    clearResults()
+    setStatus("Loading " .. State.Tab .. "...")
+
+    task.spawn(function()
+        local data, err, meta
+
+        if State.Tab == "Trending" then
+            data, err = apiGet("/v1/trending")
+        elseif State.Tab == "Search" then
+            local path = "/v1/search" .. makeQuery({
+                q = State.Query,
+                index = "scripts",
+                limit = State.Limit,
+                page = State.Page
+            })
+
+            data, err, meta = apiGet(path)
+        else
+            local params = {
+                page = State.Page,
+                limit = State.Limit,
+                sort = State.Sort,
+                freeOnly = State.Free,
+                mobileOnly = State.Mobile,
+                noKeySystem = State.NoKey,
+                verifiedOnly = State.Verified
+            }
+
+            if State.Query ~= "" then
+                params.q = State.Query
+            end
+
+            data, err, meta = apiGet(
+                "/v1/scripts" .. makeQuery(params)
+            )
+        end
+
+        if requestId ~= State.RequestId then
+            return
+        end
+
+        State.Busy = false
+
+        if not data then
+            setStatus("API error: " .. tostring(err), C.Red)
+            return
+        end
+
+        local items = {}
+
+        if State.Tab == "Trending" then
+            local rising = type(data.rising) == "table"
+                and data.rising or {}
+
+            local trending = type(data.trending) == "table"
+                and data.trending or {}
+
+            for _, item in ipairs(rising) do
+         
